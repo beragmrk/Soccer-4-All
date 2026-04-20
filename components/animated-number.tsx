@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 type AnimatedNumberProps = {
   value: number;
@@ -27,15 +27,17 @@ export default function AnimatedNumber({
 }: AnimatedNumberProps) {
   const ref = useRef<HTMLSpanElement | null>(null);
   const frameRef = useRef<number | null>(null);
-  const [displayValue, setDisplayValue] = useState(0);
-  const [hasAnimated, setHasAnimated] = useState(false);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const timeoutRef = useRef<number | null>(null);
+  const startedRef = useRef(false);
+  const [displayValue, setDisplayValue] = useState(value);
 
   const finalLabel = useMemo(() => `${prefix}${formatNumber(value)}${suffix}`, [prefix, suffix, value]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = ref.current;
 
-    if (!element || hasAnimated) {
+    if (!element || startedRef.current) {
       return;
     }
 
@@ -43,51 +45,86 @@ export default function AnimatedNumber({
 
     if (prefersReducedMotion) {
       setDisplayValue(value);
-      setHasAnimated(true);
       return;
     }
 
-    const observer = new IntersectionObserver(
+    const finishAtValue = () => {
+      setDisplayValue(value);
+    };
+
+    const startAnimation = () => {
+      if (startedRef.current) {
+        return;
+      }
+
+      startedRef.current = true;
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+      }
+      observerRef.current?.disconnect();
+
+      const startTime = performance.now();
+      setDisplayValue(0);
+
+      const tick = (now: number) => {
+        const elapsed = Math.max(0, now - startTime);
+        const progress = Math.min(elapsed / durationMs, 1);
+        const eased = easeOutCubic(progress);
+        const nextValue = Math.round(Math.max(0, value * eased));
+        setDisplayValue(nextValue);
+
+        if (progress < 1) {
+          frameRef.current = window.requestAnimationFrame(tick);
+        } else {
+          finishAtValue();
+        }
+      };
+
+      frameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    const rect = element.getBoundingClientRect();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+    const visibleNow = rect.top < viewportHeight * 0.92 && rect.bottom > viewportHeight * 0.08;
+
+    if (visibleNow) {
+      startAnimation();
+      return () => {
+        if (frameRef.current) {
+          window.cancelAnimationFrame(frameRef.current);
+        }
+      };
+    }
+
+    observerRef.current = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
-          if (!entry.isIntersecting || hasAnimated) {
+          if (!entry.isIntersecting) {
             return;
           }
 
-          setHasAnimated(true);
-          const startTime = performance.now();
-
-          const tick = (now: number) => {
-            const elapsed = now - startTime;
-            const progress = Math.min(elapsed / durationMs, 1);
-            const eased = easeOutCubic(progress);
-            setDisplayValue(Math.round(value * eased));
-
-            if (progress < 1) {
-              frameRef.current = window.requestAnimationFrame(tick);
-            }
-          };
-
-          setDisplayValue(0);
-          frameRef.current = window.requestAnimationFrame(tick);
-          observer.disconnect();
+          startAnimation();
         });
       },
       {
-        threshold: 0.4,
+        threshold: 0.2,
         rootMargin: "0px 0px -10% 0px"
       }
     );
 
-    observer.observe(element);
+    observerRef.current.observe(element);
+    timeoutRef.current = window.setTimeout(finishAtValue, 2500);
 
     return () => {
-      observer.disconnect();
+      observerRef.current?.disconnect();
+      if (timeoutRef.current) {
+        window.clearTimeout(timeoutRef.current);
+      }
       if (frameRef.current) {
         window.cancelAnimationFrame(frameRef.current);
       }
     };
-  }, [durationMs, hasAnimated, value]);
+  }, [durationMs, value]);
 
   return (
     <span ref={ref} className={className} aria-label={finalLabel}>
